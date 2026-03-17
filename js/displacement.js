@@ -63,6 +63,10 @@ export function applyDisplacement(geometry, imageData, imgWidth, imgHeight, sett
   // vertices get a smooth displacement blend instead of a hard on/off cutoff.
   const maskedFracMap = new Map();
 
+  // Optional per-vertex exclusion weights threaded through by subdivision.js.
+  // A face's user-exclusion flag = average of its 3 vertex weights > 0.5.
+  const ewAttr = geometry.attributes.excludeWeight || null;
+
   for (let t = 0; t < count; t += 3) {
     vA.fromBufferAttribute(posAttr, t);
     vB.fromBufferAttribute(posAttr, t + 1);
@@ -71,13 +75,22 @@ export function applyDisplacement(geometry, imageData, imgWidth, imgHeight, sett
     edge2.subVectors(vC, vA);
     faceNrm.crossVectors(edge1, edge2); // length = 2× triangle area → natural area weighting
 
-    // Determine if this face is masked (used to build the per-vertex blend weight)
+    // Determine if this face is masked (used to build the per-vertex blend weight).
+    // Combines angle-based masking with optional user-painted exclusion.
     const faceArea   = faceNrm.length();                               // ∝ 2× triangle area
     const faceNzNorm = faceArea > 1e-12 ? faceNrm.z / faceArea : 0;  // unit-normal Z component
     const faceAngle  = Math.acos(Math.abs(faceNzNorm)) * (180 / Math.PI);
-    const faceMasked = faceNzNorm < 0
+    const angleMasked = faceNzNorm < 0
       ? (settings.bottomAngleLimit > 0 && faceAngle <= settings.bottomAngleLimit)
       : (settings.topAngleLimit    > 0 && faceAngle <= settings.topAngleLimit);
+    // Threshold >0.99 (not 0.5) prevents shared-vertex MAX-propagation from
+    // accidentally marking adjacent faces as excluded on closed meshes (e.g. a
+    // cube): adjacent faces have 2/3 vertices at weight 1.0 → avg ≈ 0.67 which
+    // would wrongly trigger the old 0.5 threshold.
+    const userExcluded = ewAttr
+      ? (ewAttr.getX(t) + ewAttr.getX(t + 1) + ewAttr.getX(t + 2)) / 3 > 0.99
+      : false;
+    const faceMasked = angleMasked || userExcluded;
 
     for (let v = 0; v < 3; v++) {
       tmpPos.fromBufferAttribute(posAttr, t + v);

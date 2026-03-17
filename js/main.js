@@ -1,4 +1,7 @@
-import { initViewer, loadGeometry, setMeshMaterial, setWireframe } from './viewer.js';
+import * as THREE from 'three';
+import { initViewer, loadGeometry, setMeshMaterial, setWireframe,
+         getControls, getCamera, getCurrentMesh,
+         setExclusionOverlay, setHoverPreview } from './viewer.js';
 import { loadSTLFile, computeBounds, getTriangleCount }  from './stlLoader.js';
 import { PRESETS, loadCustomTexture }  from './presetTextures.js';
 import { createPreviewMaterial, updateMaterial } from './previewMaterial.js';
@@ -6,6 +9,8 @@ import { subdivide }          from './subdivision.js';
 import { applyDisplacement }  from './displacement.js';
 import { decimate }           from './decimation.js';
 import { exportSTL }          from './exporter.js';
+import { buildAdjacency, bucketFill,
+         buildExclusionOverlayGeo, buildFaceWeights } from './exclusion.js';
 
 // ── State ─────────────────────────────────────────────────────────────────────
 
@@ -14,6 +19,19 @@ let currentBounds     = null;   // bounds of the original geometry
 let activeMapEntry    = null;   // { name, texture, imageData, width, height }
 let previewMaterial   = null;
 let isExporting       = false;
+
+// ── Exclusion state ───────────────────────────────────────────────────────────
+let excludedFaces      = new Set();   // triangle indices in currentGeometry
+let triangleAdjacency  = null;        // Map from buildAdjacency
+let triangleCentroids  = null;        // Float32Array from buildAdjacency
+let exclusionTool      = null;        // 'brush' | 'bucket' | null
+let eraseMode          = false;
+let brushIsRadius      = false;
+let brushRadius        = 5.0;
+let bucketThreshold    = 30;
+let isPainting         = false;
+let _lastHoverTriIdx   = -1;          // last triangle index used for hover preview
+const _raycaster       = new THREE.Raycaster();
 
 const settings = {
   mappingMode:   6,     // Cubic default
@@ -68,6 +86,22 @@ const bottomAngleLimitSlider = document.getElementById('bottom-angle-limit');
 const topAngleLimitSlider    = document.getElementById('top-angle-limit');
 const bottomAngleLimitVal    = document.getElementById('bottom-angle-limit-val');
 const topAngleLimitVal       = document.getElementById('top-angle-limit-val');
+
+// ── Exclusion panel DOM refs ──────────────────────────────────────────────────
+const exclBrushBtn        = document.getElementById('excl-brush-btn');
+const exclBucketBtn       = document.getElementById('excl-bucket-btn');
+const exclEraseToggle     = document.getElementById('excl-erase-toggle');
+const exclBrushTypeRow    = document.getElementById('excl-brush-type-row');
+const exclBrushSingleBtn  = document.getElementById('excl-brush-single');
+const exclBrushRadiusBtn  = document.getElementById('excl-brush-radius-btn');
+const exclRadiusRow       = document.getElementById('excl-radius-row');
+const exclBrushRadiusSlider = document.getElementById('excl-brush-radius-slider');
+const exclBrushRadiusVal    = document.getElementById('excl-brush-radius-val');
+const exclThresholdRow    = document.getElementById('excl-threshold-row');
+const exclThresholdSlider = document.getElementById('excl-threshold-slider');
+const exclThresholdVal    = document.getElementById('excl-threshold-val');
+const exclCount           = document.getElementById('excl-count');
+const exclClearBtn        = document.getElementById('excl-clear-btn');
 
 // ── Scale slider log helpers ──────────────────────────────────────────────────
 // Slider stores 0–1000; actual scale spans 0.1–10 on a log axis.
@@ -211,11 +245,201 @@ function wireEvents() {
 
   // ── Wireframe ──
   wireframeToggle.addEventListener('change', () => setWireframe(wireframeToggle.checked));
+
+  // ── Exclusion tool wiring ─────────────────────────────────────────────────
+
+  exclBrushBtn.addEventListener('click', () => setExclusionTool('brush'));
+  exclBucketBtn.addEventListener('click', () => setExclusionTool('bucket'));
+
+  exclEraseToggle.addEventListener('click', () => {
+    eraseMode = !eraseMode;
+    exclEraseToggle.classList.toggle('active', eraseMode);
+    exclEraseToggle.setAttribute('aria-pressed', String(eraseMode));
+  });
+
+  exclBrushSingleBtn.addEventListener('click', () => {
+    brushIsRadius = false;
+    exclBrushSingleBtn.classList.add('active');
+    exclBrushRadiusBtn.classList.remove('active');
+    exclRadiusRow.classList.add('hidden');
+  });
+
+  exclBrushRadiusBtn.addEventListener('click', () => {
+    brushIsRadius = true;
+    exclBrushRadiusBtn.classList.add('active');
+    exclBrushSingleBtn.classList.remove('active');
+    if (exclusionTool === 'brush') exclRadiusRow.classList.remove('hidden');
+  });
+
+  exclBrushRadiusSlider.addEventListener('input', () => {
+    brushRadius = parseFloat(exclBrushRadiusSlider.value);
+    exclBrushRadiusVal.value = brushRadius;
+  });
+  exclBrushRadiusVal.addEventListener('change', () => {
+    brushRadius = Math.max(0.1, Math.min(50, parseFloat(exclBrushRadiusVal.value) || 5));
+    exclBrushRadiusSlider.value = brushRadius;
+    exclBrushRadiusVal.value = brushRadius;
+  });
+
+  exclThresholdSlider.addEventListener('input', () => {
+    bucketThreshold = parseFloat(exclThresholdSlider.value);
+    exclThresholdVal.value = bucketThreshold;
+    _lastHoverTriIdx = -1; // invalidate hover so next mousemove re-computes
+  });
+  exclThresholdVal.addEventListener('change', () => {
+    bucketThreshold = Math.max(0, Math.min(180, parseFloat(exclThresholdVal.value) || 30));
+    exclThresholdSlider.value = bucketThreshold;
+    exclThresholdVal.value = bucketThreshold;
+    _lastHoverTriIdx = -1;
+  });
+
+  exclClearBtn.addEventListener('click', () => {
+    excludedFaces = new Set();
+    refreshExclusionOverlay();
+  });
+
+  // ── Canvas mouse events for exclusion painting ────────────────────────────
+  canvas.addEventListener('mousedown', (e) => {
+    if (!currentGeometry || !exclusionTool || e.button !== 0) return;
+    e.preventDefault();
+    getControls().enabled = false;
+    isPainting = true;
+
+    if (exclusionTool === 'bucket') {
+      const triIdx = pickTriangle(e);
+      if (triIdx >= 0) {
+        const filled = bucketFill(triIdx, triangleAdjacency, bucketThreshold);
+        for (const t of filled) {
+          if (eraseMode) excludedFaces.delete(t); else excludedFaces.add(t);
+        }
+        refreshExclusionOverlay();
+        // Clear hover immediately so the confirmed orange overlay is fully visible
+        _lastHoverTriIdx = -1;
+        setHoverPreview(null);
+      }
+      isPainting = false;
+      getControls().enabled = true;
+    } else {
+      paintAt(e);
+    }
+  });
+
+  canvas.addEventListener('mousemove', (e) => {
+    if (isPainting && exclusionTool === 'brush') {
+      paintAt(e);
+      return;
+    }
+    if (!isPainting && exclusionTool === 'bucket' && currentGeometry) {
+      updateBucketHover(e);
+    }
+  });
+
+  canvas.addEventListener('mouseleave', () => {
+    _lastHoverTriIdx = -1;
+    setHoverPreview(null);
+  });
+
+  document.addEventListener('mouseup', () => {
+    if (!isPainting) return;
+    isPainting = false;
+    getControls().enabled = true;
+  });
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && exclusionTool) {
+      setExclusionTool(null);
+    }
+  });
+}
+
+// ── Exclusion helpers ─────────────────────────────────────────────────────────
+
+function setExclusionTool(tool) {
+  // Clicking the active tool toggles it off; passing null always deactivates
+  exclusionTool = (exclusionTool === tool) ? null : tool;
+  exclBrushBtn.classList.toggle('active', exclusionTool === 'brush');
+  exclBucketBtn.classList.toggle('active', exclusionTool === 'bucket');
+  // Show brush-type row only while brush is active
+  exclBrushTypeRow.classList.toggle('hidden', exclusionTool !== 'brush');
+  // Show radius row only while brush + radius mode is active
+  exclRadiusRow.classList.toggle('hidden', !(exclusionTool === 'brush' && brushIsRadius));
+  // Show threshold row only while bucket is active
+  exclThresholdRow.classList.toggle('hidden', exclusionTool !== 'bucket');
+  canvas.style.cursor = exclusionTool ? 'crosshair' : '';
+  // Clear hover preview whenever the tool changes or is deactivated
+  _lastHoverTriIdx = -1;
+  setHoverPreview(null);
+  // Re-enable controls if tool was deactivated mid-paint
+  if (!exclusionTool) {
+    isPainting = false;
+    getControls().enabled = true;
+  }
+}
+
+function _canvasNDC(e) {
+  const rect = canvas.getBoundingClientRect();
+  return new THREE.Vector2(
+    ((e.clientX - rect.left) / rect.width)  *  2 - 1,
+    ((e.clientY - rect.top)  / rect.height) * -2 + 1,
+  );
+}
+
+function pickTriangle(e) {
+  const mesh = getCurrentMesh();
+  if (!mesh) return -1;
+  _raycaster.setFromCamera(_canvasNDC(e), getCamera());
+  const hits = _raycaster.intersectObject(mesh);
+  return hits.length > 0 ? hits[0].faceIndex : -1;
+}
+
+function paintAt(e) {
+  const mesh = getCurrentMesh();
+  if (!mesh) return;
+  _raycaster.setFromCamera(_canvasNDC(e), getCamera());
+  const hits = _raycaster.intersectObject(mesh);
+  if (hits.length === 0) return;
+
+  const triIdx = hits[0].faceIndex;
+
+  if (brushIsRadius) {
+    const hitPt    = hits[0].point;
+    const triCount = triangleCentroids.length / 3;
+    const r2 = brushRadius * brushRadius;
+    for (let t = 0; t < triCount; t++) {
+      const dx = triangleCentroids[t * 3]     - hitPt.x;
+      const dy = triangleCentroids[t * 3 + 1] - hitPt.y;
+      const dz = triangleCentroids[t * 3 + 2] - hitPt.z;
+      if (dx * dx + dy * dy + dz * dz <= r2) {
+        if (eraseMode) excludedFaces.delete(t); else excludedFaces.add(t);
+      }
+    }
+  } else {
+    if (eraseMode) excludedFaces.delete(triIdx); else excludedFaces.add(triIdx);
+  }
+
+  refreshExclusionOverlay();
+}
+
+function refreshExclusionOverlay() {
+  if (!currentGeometry) return;
+  setExclusionOverlay(buildExclusionOverlayGeo(currentGeometry, excludedFaces));
+  const n = excludedFaces.size;
+  exclCount.textContent = `${n.toLocaleString()} face${n === 1 ? '' : 's'} excluded`;
+}
+
+function updateBucketHover(e) {
+  const triIdx = pickTriangle(e);
+  if (triIdx === _lastHoverTriIdx) return; // unchanged — skip expensive BFS
+  _lastHoverTriIdx = triIdx;
+  if (triIdx < 0 || !triangleAdjacency) {
+    setHoverPreview(null);
+    return;
+  }
+  const hovered = bucketFill(triIdx, triangleAdjacency, bucketThreshold);
+  setHoverPreview(buildExclusionOverlayGeo(currentGeometry, hovered));
 }
 
 // ── Slider helper ─────────────────────────────────────────────────────────────
-
-let previewDebounce = null;
 
 function linkSlider(slider, valInput, onChangeFn, livePreview = true) {
   const isSpan = valInput.tagName === 'SPAN';
@@ -276,6 +500,28 @@ async function handleSTL(file) {
     // Show mesh with a default material until a map is selected
     loadGeometry(geometry);
     dropHint.classList.add('hidden');
+
+    // Reset exclusion state for the new mesh
+    excludedFaces     = new Set();
+    exclusionTool     = null;
+    eraseMode         = false;
+    isPainting        = false;
+    exclBrushBtn.classList.remove('active');
+    exclBucketBtn.classList.remove('active');
+    exclEraseToggle.classList.remove('active');
+    exclBrushTypeRow.classList.add('hidden');
+    exclRadiusRow.classList.add('hidden');
+    exclThresholdRow.classList.add('hidden');
+    canvas.style.cursor = '';
+    setExclusionOverlay(null);
+    setHoverPreview(null);
+    _lastHoverTriIdx = -1;
+    exclCount.textContent = '0 faces excluded';
+    // Build adjacency data for brush/bucket tools (synchronous; fast enough for
+    // typical STL sizes processed by this tool)
+    const adjData = buildAdjacency(geometry);
+    triangleAdjacency = adjData.adjacency;
+    triangleCentroids = adjData.centroids;
 
     // Reset scale & offset sliders so scale=1 = one tile covers the full bounding box
     const resetVal = (slider, valEl, value) => {
@@ -346,9 +592,17 @@ async function handleExport() {
   try {
     setProgress(0.02, 'Subdividing mesh…');
 
+    // Build per-vertex exclusion weights if any faces are excluded.
+    // subdivision.js interpolates these through edge splits so the exclusion
+    // propagates correctly to all new vertices inside the excluded region.
+    const faceWeights = excludedFaces.size > 0
+      ? buildFaceWeights(currentGeometry, excludedFaces)
+      : null;
+
     const { geometry: subdivided, safetyCapHit } = await runAsync(() =>
       subdivide(currentGeometry, settings.refineLength,
-                (p) => setProgress(0.02 + p * 0.35, 'Subdividing mesh…'))
+                (p) => setProgress(0.02 + p * 0.35, 'Subdividing mesh…'),
+                faceWeights)
     );
 
     const subTriCount = subdivided.attributes.position.count / 3;

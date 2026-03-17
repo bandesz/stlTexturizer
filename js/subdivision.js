@@ -19,8 +19,8 @@ const SAFETY_CAP = 5_000_000; // absolute OOM guard
 
 // ── Public entry point ───────────────────────────────────────────────────────
 
-export function subdivide(geometry, maxEdgeLength, onProgress) {
-  const { positions, normals, indices } = toIndexed(geometry);
+export function subdivide(geometry, maxEdgeLength, onProgress, faceWeights = null) {
+  const { positions, normals, weights, indices } = toIndexed(geometry, faceWeights);
 
   const maxIterations = 12;
   let currentIndices = indices;
@@ -34,7 +34,7 @@ export function subdivide(geometry, maxEdgeLength, onProgress) {
     }
 
     const { newIndices, changed } = subdividePass(
-      positions, normals, currentIndices, maxEdgeLength, SAFETY_CAP
+      positions, normals, weights, currentIndices, maxEdgeLength, SAFETY_CAP
     );
     currentIndices = newIndices;
 
@@ -44,7 +44,7 @@ export function subdivide(geometry, maxEdgeLength, onProgress) {
     if (!changed || safetyCapHit) break;
   }
 
-  return { geometry: toNonIndexed(positions, normals, currentIndices), safetyCapHit };
+  return { geometry: toNonIndexed(positions, normals, weights, currentIndices), safetyCapHit };
 }
 
 // ── One subdivision pass ──────────────────────────────────────────────────────
@@ -68,7 +68,7 @@ export function subdivide(geometry, maxEdgeLength, onProgress) {
 // long edge still produce chains of thin children (unavoidable without moving
 // vertices off the surface), but the mesh is now crack-free in all cases.
 
-function subdividePass(positions, normals, indices, maxEdgeLength, safetyCap) {
+function subdividePass(positions, normals, weights, indices, maxEdgeLength, safetyCap) {
   const maxSq = maxEdgeLength * maxEdgeLength;
   const midCache = new Map();
 
@@ -112,9 +112,9 @@ function subdividePass(positions, normals, indices, maxEdgeLength, safetyCap) {
       //     / \ / \
       //    c─mBC───b
       //
-      const mAB = getMidpoint(positions, normals, midCache, a, b);
-      const mBC = getMidpoint(positions, normals, midCache, b, c);
-      const mCA = getMidpoint(positions, normals, midCache, c, a);
+      const mAB = getMidpoint(positions, normals, weights, midCache, a, b);
+      const mBC = getMidpoint(positions, normals, weights, midCache, b, c);
+      const mCA = getMidpoint(positions, normals, weights, midCache, c, a);
       nextIndices.push(
         a,   mAB, mCA,
         mAB, b,   mBC,
@@ -125,13 +125,13 @@ function subdividePass(positions, normals, indices, maxEdgeLength, safetyCap) {
     } else if (n === 1) {
       // ── 1-split: bisect the one marked edge → 2 sub-triangles ──────────
       if (sAB) {
-        const m = getMidpoint(positions, normals, midCache, a, b);
+        const m = getMidpoint(positions, normals, weights, midCache, a, b);
         nextIndices.push(a, m, c,  m, b, c);
       } else if (sBC) {
-        const m = getMidpoint(positions, normals, midCache, b, c);
+        const m = getMidpoint(positions, normals, weights, midCache, b, c);
         nextIndices.push(a, b, m,  a, m, c);
       } else {                           // sCA
-        const m = getMidpoint(positions, normals, midCache, c, a);
+        const m = getMidpoint(positions, normals, weights, midCache, c, a);
         nextIndices.push(a, b, m,  m, b, c);
       }
 
@@ -144,24 +144,24 @@ function subdividePass(positions, normals, indices, maxEdgeLength, safetyCap) {
       // opposite vertices, preserving consistent CCW winding throughout.
 
       if (!sAB) {                        // sBC + sCA: fan from C
-        const mBC = getMidpoint(positions, normals, midCache, b, c);
-        const mCA = getMidpoint(positions, normals, midCache, c, a);
+        const mBC = getMidpoint(positions, normals, weights, midCache, b, c);
+        const mCA = getMidpoint(positions, normals, weights, midCache, c, a);
         nextIndices.push(
           a,   b,   mBC,
           a,   mBC, mCA,
           c,   mCA, mBC,
         );
       } else if (!sBC) {                 // sAB + sCA: fan from A
-        const mAB = getMidpoint(positions, normals, midCache, a, b);
-        const mCA = getMidpoint(positions, normals, midCache, c, a);
+        const mAB = getMidpoint(positions, normals, weights, midCache, a, b);
+        const mCA = getMidpoint(positions, normals, weights, midCache, c, a);
         nextIndices.push(
           a,   mAB, mCA,
           mAB, b,   c,
           mAB, c,   mCA,
         );
       } else {                           // sAB + sBC: fan from B
-        const mAB = getMidpoint(positions, normals, midCache, a, b);
-        const mBC = getMidpoint(positions, normals, midCache, b, c);
+        const mAB = getMidpoint(positions, normals, weights, midCache, a, b);
+        const mBC = getMidpoint(positions, normals, weights, midCache, b, c);
         nextIndices.push(
           b,   mBC, mAB,
           a,   mAB, mBC,
@@ -188,7 +188,7 @@ function edgeLenSq(pos, a, b) {
   return dx*dx + dy*dy + dz*dz;
 }
 
-function getMidpoint(positions, normals, cache, a, b) {
+function getMidpoint(positions, normals, weights, cache, a, b) {
   const key = a < b ? `${a}:${b}` : `${b}:${a}`;
   if (cache.has(key)) return cache.get(key);
 
@@ -206,18 +206,27 @@ function getMidpoint(positions, normals, cache, a, b) {
   const idx = (positions.length / 3) | 0;
   positions.push(mx, my, mz);
   normals.push(nx / nl, ny / nl, nz / nl);
+  // Interpolate exclusion weight: 0 = included, 1 = excluded.
+  // A midpoint between two excluded vertices → 1.0; between mixed → 0.5
+  // (displacement.js treats > 0.5 average as excluded for the face).
+  if (weights) weights.push((weights[a] + weights[b]) / 2);
   cache.set(key, idx);
   return idx;
 }
 
 // ── Non-indexed → indexed conversion ────────────────────────────────────────
 
-function toIndexed(geometry) {
+// nonIndexedWeights: optional Float32Array(vertexCount) where vertex i has
+// weight = 1.0 if its triangle (floor(i/3)) is user-excluded, else 0.
+// When multiple original vertices map to the same indexed vertex, the MAX
+// weight wins (conservative: any excluded face marks the shared vertex).
+function toIndexed(geometry, nonIndexedWeights = null) {
   const posAttr = geometry.attributes.position;
   const nrmAttr = geometry.attributes.normal;
 
   const positions = [];
   const normals   = [];
+  const weights   = nonIndexedWeights ? [] : null;
   const indices   = [];
   const vertMap   = new Map();
 
@@ -236,20 +245,25 @@ function toIndexed(geometry) {
       idx = positions.length / 3;
       positions.push(px, py, pz);
       normals.push(nx_, ny_, nz_);
+      if (weights) weights.push(nonIndexedWeights[i]);
       vertMap.set(key, idx);
+    } else if (weights && nonIndexedWeights[i] > weights[idx]) {
+      // MAX: if any incident original face was excluded, the shared vertex is excluded
+      weights[idx] = nonIndexedWeights[i];
     }
     indices.push(idx);
   }
 
-  return { positions, normals, indices };
+  return { positions, normals, weights, indices };
 }
 
 // ── Indexed → non-indexed ────────────────────────────────────────────────────
 
-function toNonIndexed(positions, normals, indices) {
+function toNonIndexed(positions, normals, weights, indices) {
   const triCount  = indices.length / 3;
   const posArray  = new Float32Array(triCount * 9);
   const nrmArray  = new Float32Array(triCount * 9);
+  const wgtArray  = weights ? new Float32Array(triCount * 3) : null;
 
   for (let t = 0; t < triCount; t++) {
     for (let v = 0; v < 3; v++) {
@@ -261,11 +275,14 @@ function toNonIndexed(positions, normals, indices) {
       nrmArray[t * 9 + v * 3]     = normals[vidx * 3];
       nrmArray[t * 9 + v * 3 + 1] = normals[vidx * 3 + 1];
       nrmArray[t * 9 + v * 3 + 2] = normals[vidx * 3 + 2];
+
+      if (wgtArray) wgtArray[t * 3 + v] = weights[vidx];
     }
   }
 
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.BufferAttribute(posArray, 3));
   geo.setAttribute('normal',   new THREE.BufferAttribute(nrmArray, 3));
+  if (wgtArray) geo.setAttribute('excludeWeight', new THREE.BufferAttribute(wgtArray, 1));
   return geo;
 }

@@ -9,6 +9,8 @@ let currentMesh = null;
 let axesGroup = null;
 let wireframeLines = null;   // LineSegments overlay, or null when hidden
 let wireframeVisible = false;
+let exclusionMesh = null;    // flat orange overlay for user-excluded faces
+let hoverMesh = null;        // semi-transparent yellow bucket-fill preview
 
 // Build a labelled coordinate axes indicator scaled to `size`.
 // X = red, Y = green, Z = blue (up).
@@ -245,10 +247,72 @@ function fitCamera(sphere) {
   controls.update();
 }
 
-export function getRenderer() { return renderer; }
-export function getCamera()   { return camera; }
-export function getScene()    { return scene; }
+export function getRenderer()  { return renderer; }
+export function getCamera()    { return camera; }
+export function getScene()     { return scene; }
+export function getControls()  { return controls; }
 export function getCurrentMesh() { return currentMesh; }
+
+/**
+ * Replace (or clear) the flat orange exclusion overlay mesh.
+ * overlayGeo must be a non-indexed BufferGeometry with a 'position' attribute,
+ * or null / an empty geometry to clear the overlay.
+ * The mesh lives directly in the scene so loadGeometry() (which clears
+ * meshGroup) never accidentally removes it.
+ *
+ * @param {THREE.BufferGeometry|null} overlayGeo
+ */
+export function setExclusionOverlay(overlayGeo) {
+  if (exclusionMesh) {
+    scene.remove(exclusionMesh);
+    exclusionMesh.geometry.dispose();
+    exclusionMesh.material.dispose();
+    exclusionMesh = null;
+  }
+  if (!overlayGeo || overlayGeo.attributes.position.count === 0) return;
+  exclusionMesh = new THREE.Mesh(
+    overlayGeo,
+    new THREE.MeshBasicMaterial({
+      color: 0xff6600,
+      side: THREE.DoubleSide,
+      polygonOffset: true,
+      polygonOffsetFactor: -1,
+      polygonOffsetUnits: -1,
+    }),
+  );
+  exclusionMesh.renderOrder = 1;
+  scene.add(exclusionMesh);
+}
+
+/**
+ * Replace (or clear) the yellow hover-preview overlay shown before a bucket-fill
+ * click is confirmed.  Pass null or an empty geometry to clear it.
+ *
+ * @param {THREE.BufferGeometry|null} overlayGeo
+ */
+export function setHoverPreview(overlayGeo) {
+  if (hoverMesh) {
+    scene.remove(hoverMesh);
+    hoverMesh.geometry.dispose();
+    hoverMesh.material.dispose();
+    hoverMesh = null;
+  }
+  if (!overlayGeo || overlayGeo.attributes.position.count === 0) return;
+  hoverMesh = new THREE.Mesh(
+    overlayGeo,
+    new THREE.MeshBasicMaterial({
+      color: 0xffee00,
+      side: THREE.DoubleSide,
+      transparent: true,
+      opacity: 0.45,
+      polygonOffset: true,
+      polygonOffsetFactor: -2,
+      polygonOffsetUnits: -2,
+    }),
+  );
+  hoverMesh.renderOrder = 2;
+  scene.add(hoverMesh);
+}
 
 /**
  * Show or hide the triangle-edge wireframe overlay.

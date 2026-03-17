@@ -444,3 +444,111 @@ input[type="number"].val:focus { outline: none; border-color: var(--accent); }
 }
 
 .tri-limit-warning.hidden { display: none; }
+
+/* ── Surface Exclusions panel ────────────────────────────────────────────── */
+
+/* Tool button row */
+.excl-tools {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.excl-tool-btn {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 5px 8px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-muted);
+  font-size: 11px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+  white-space: nowrap;
+}
+
+.excl-tool-btn:hover {
+  border-color: var(--accent-hover);
+  color: var(--text);
+}
+
+.excl-tool-btn.active {
+  background: color-mix(in srgb, var(--accent) 18%, var(--surface2));
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* Segmented button group (Single / Radius) */
+.excl-seg {
+  display: flex;
+  flex: 1;
+}
+
+.excl-seg-btn {
+  flex: 1;
+  padding: 4px 8px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 11px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.excl-seg-btn:first-child {
+  border-radius: var(--radius) 0 0 var(--radius);
+}
+
+.excl-seg-btn:last-child {
+  border-radius: 0 var(--radius) var(--radius) 0;
+  border-left: none;
+}
+
+.excl-seg-btn.active {
+  background: color-mix(in srgb, var(--accent) 18%, var(--surface2));
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.excl-seg-btn:hover:not(.active) {
+  background: var(--border);
+  color: var(--text);
+}
+
+/* Footer row: count + clear */
+.excl-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 10px;
+}
+
+.excl-count {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.excl-clear-btn {
+  padding: 4px 10px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-muted);
+  font-size: 11px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.excl-clear-btn:hover {
+  border-color: var(--danger);
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 10%, var(--surface2));
+}
+
+/* Hide utility (used by JS to show/hide exclusion sub-rows) */
+.form-row.hidden { display: none; }
