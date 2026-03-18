@@ -18,6 +18,7 @@ const IMAGE_PRESETS = [
   { name: 'Brick',    url: 'brick.jpg'    },
   { name: 'Bubble',   url: 'bubble.jpg'   },
   { name: 'Crystal',  url: 'crystal.jpg'  },
+  { name: 'Hexagon',  url: 'hexagon.jpg'  },
   { name: 'Knitting', url: 'knitting.jpg' },
   { name: 'Knurling', url: 'knurling.jpg' },
   { name: 'Leather',  url: 'leather.jpg'  },
