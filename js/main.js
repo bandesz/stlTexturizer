@@ -11,6 +11,7 @@ import { decimate }           from './decimation.js';
 import { exportSTL }          from './exporter.js';
 import { buildAdjacency, bucketFill,
          buildExclusionOverlayGeo, buildFaceWeights } from './exclusion.js';
+import { t, initLang, setLang, getLang, applyTranslations } from './i18n.js';
 
 // ── State ─────────────────────────────────────────────────────────────────────
 
@@ -132,6 +133,17 @@ initViewer(canvas);
 // Apply saved theme to 3D viewport on startup
 setViewerTheme(document.documentElement.getAttribute('data-theme') === 'light');
 
+// Initialise language (reads localStorage / browser preference, applies translations)
+initLang();
+
+// Sync lang buttons to current language
+(function() {
+  const lang = getLang();
+  document.querySelectorAll('.lang-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.langCode === lang);
+  });
+})();
+
 // Theme toggle
 document.getElementById('theme-toggle').addEventListener('click', () => {
   const isLight = document.documentElement.getAttribute('data-theme') !== 'light';
@@ -187,6 +199,22 @@ function selectPreset(idx, swatchEl) {
 // ── Event wiring ──────────────────────────────────────────────────────────────
 
 function wireEvents() {
+  // ── Language toggle ──
+  document.querySelectorAll('.lang-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const lang = btn.dataset.langCode;
+      setLang(lang);
+      document.querySelectorAll('.lang-btn').forEach(b =>
+        b.classList.toggle('active', b.dataset.langCode === lang));
+      // Re-translate <option> elements (innerHTML won't reach these)
+      document.querySelectorAll('select[id="mapping-mode"] option[data-i18n-opt]').forEach(opt => {
+        opt.textContent = t(opt.dataset.i18nOpt);
+      });
+      // Refresh dynamic count text to current language
+      if (currentGeometry) refreshExclusionOverlay();
+    });
+  });
+
   // ── STL loading ──
   stlFileInput.addEventListener('change', (e) => {
     if (e.target.files[0]) handleSTL(e.target.files[0]);
@@ -429,10 +457,10 @@ function setSelectionMode(include) {
   exclModeIncludeBtn.classList.toggle('active', selectionMode);
   exclModeExcludeBtn.setAttribute('aria-pressed', String(!selectionMode));
   exclModeIncludeBtn.setAttribute('aria-pressed', String(selectionMode));
-  exclSectionHeading.textContent = selectionMode ? 'Surface Selection' : 'Surface Exclusions';
+  exclSectionHeading.textContent = selectionMode ? t('sections.surfaceSelection') : t('sections.surfaceExclusions');
   exclHint.textContent = selectionMode
-    ? 'Selected surfaces appear green and will be the only ones to receive displacement during export.'
-    : 'Excluded surfaces appear orange and will not receive displacement during export.';
+    ? t('excl.hintInclude')
+    : t('excl.hintExclude');
   // Clear the painted set — faces had opposite semantics in the previous mode
   excludedFaces = new Set();
   refreshExclusionOverlay();
@@ -537,8 +565,8 @@ function refreshExclusionOverlay() {
   }
   const n = excludedFaces.size;
   exclCount.textContent = selectionMode
-    ? `${n.toLocaleString()} face${n === 1 ? '' : 's'} selected`
-    : `${n.toLocaleString()} face${n === 1 ? '' : 's'} excluded`;
+    ? t(n === 1 ? 'excl.faceSelected' : 'excl.facesSelected', { n: n.toLocaleString() })
+    : t(n === 1 ? 'excl.faceExcluded' : 'excl.facesExcluded', { n: n.toLocaleString() });
 }
 
 function updateBrushCursor(e) {
@@ -676,7 +704,7 @@ async function handleSTL(file) {
     setExclusionOverlay(null);
     setHoverPreview(null);
     _lastHoverTriIdx = -1;
-    exclCount.textContent = '0 faces excluded';
+    exclCount.textContent = t('excl.initExcluded');
     // Build adjacency data for brush/bucket tools (synchronous; fast enough for
     // typical STL sizes processed by this tool)
     const adjData = buildAdjacency(geometry);
@@ -703,13 +731,13 @@ async function handleSTL(file) {
 
     const triCount = getTriangleCount(geometry);
     const mb = ((geometry.attributes.position.array.byteLength) / 1024 / 1024).toFixed(2);
-    meshInfo.textContent = `${triCount.toLocaleString()} triangles · ${mb} MB`;
+    meshInfo.textContent = t('ui.meshInfo', { n: triCount.toLocaleString(), mb });
 
     exportBtn.disabled = (activeMapEntry === null);
     updatePreview();
   } catch (err) {
     console.error('Failed to load STL:', err);
-    alert(`Could not load STL: ${err.message}`);
+    alert(t('alerts.loadFailed', { msg: err.message }));
   }
 }
 
@@ -792,7 +820,7 @@ async function handleExport() {
   exportProgress.classList.remove('hidden');
 
   try {
-    setProgress(0.02, 'Subdividing mesh…');
+    setProgress(0.02, t('progress.subdividing'));
     await yieldFrame();
 
     // Build per-vertex exclusion weights combining user-painted exclusion + angle masking.
@@ -806,12 +834,12 @@ async function handleExport() {
 
     const { geometry: subdivided, safetyCapHit } = await subdivide(
       currentGeometry, settings.refineLength,
-      (p) => setProgress(0.02 + p * 0.35, 'Subdividing mesh…'),
+      (p) => setProgress(0.02 + p * 0.35, t('progress.subdividing')),
       faceWeights
     );
 
     const subTriCount = subdivided.attributes.position.count / 3;
-    setProgress(0.38, `Applying displacement to ${subTriCount.toLocaleString()} triangles…`);
+    setProgress(0.38, t('progress.applyingDisplacement', { n: subTriCount.toLocaleString() }));
 
     const displaced = await runAsync(() =>
       applyDisplacement(
@@ -821,17 +849,19 @@ async function handleExport() {
         activeMapEntry.height,
         settings,
         currentBounds,
-        (p) => setProgress(0.38 + p * 0.32, `Displacing vertices…`)
+        (p) => setProgress(0.38 + p * 0.32, t('progress.displacingVertices'))
       )
     );
 
     const dispTriCount = displaced.attributes.position.count / 3;
     const needsDecimation = dispTriCount > settings.maxTriangles;
     triLimitWarning.classList.toggle('hidden', !safetyCapHit);
+    // Re-apply translated warning text in case language changed since last export
+    triLimitWarning.textContent = t('warnings.safetyCapHit');
 
     let finalGeometry = displaced;
     if (needsDecimation) {
-      setProgress(0.71, `Decimating ${dispTriCount.toLocaleString()} → ${settings.maxTriangles.toLocaleString()} triangles…`);
+      setProgress(0.71, t('progress.decimatingTo', { from: dispTriCount.toLocaleString(), to: settings.maxTriangles.toLocaleString() }));
       finalGeometry = await runAsync(() =>
         decimate(
           displaced,
@@ -840,7 +870,7 @@ async function handleExport() {
             const cur = Math.round(dispTriCount - (dispTriCount - settings.maxTriangles) * p);
             setProgress(
               0.71 + p * 0.25,
-              `Decimating: ${cur.toLocaleString()} → ${settings.maxTriangles.toLocaleString()} triangles`
+              t('progress.decimating', { cur: cur.toLocaleString(), to: settings.maxTriangles.toLocaleString() })
             );
           }
         )
@@ -873,7 +903,7 @@ async function handleExport() {
       else finalGeometry.attributes.normal.needsUpdate = true;
     }
 
-    setProgress(0.97, 'Writing STL…');
+    setProgress(0.97, t('progress.writingStl'));
     await yieldFrame();
 
     const texLabel = activeMapEntry.isCustom ? 'custom' : activeMapEntry.name.replace(/\s+/g, '-');
@@ -881,14 +911,14 @@ async function handleExport() {
     const exportName = `${currentStlName}_${texLabel}_amp${ampLabel}.stl`;
     exportSTL(finalGeometry, exportName);
 
-    setProgress(1.0, 'Done!');
+    setProgress(1.0, t('progress.done'));
     setTimeout(() => {
       exportProgress.classList.add('hidden');
       setProgress(0, '');
     }, 1500);
   } catch (err) {
     console.error('Export failed:', err);
-    alert(`Export failed: ${err.message}`);
+    alert(t('alerts.exportFailed', { msg: err.message }));
     exportProgress.classList.add('hidden');
   } finally {
     isExporting = false;

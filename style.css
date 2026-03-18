@@ -30,6 +30,50 @@
   --success:      #1a7f3c;
 }
 
+/* ── Header actions (language selector + theme toggle) ──────────────── */
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.lang-seg {
+  display: flex;
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.lang-btn {
+  height: 28px;
+  padding: 0 10px;
+  background: var(--surface2);
+  border: none;
+  border-radius: 0;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.lang-btn:not(:last-child) {
+  border-right: 1px solid var(--border);
+}
+
+.lang-btn:hover {
+  color: var(--accent);
+}
+
+.lang-btn.active {
+  background: var(--accent);
+  color: #fff;
+}
+
 /* ── Theme toggle button ─────────────────────────────────────────────── */
 .theme-toggle {
   display: flex;
