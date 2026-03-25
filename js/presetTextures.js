@@ -34,6 +34,7 @@ const IMAGE_PRESETS = [
   { name: 'Bubble',       url: 'textures/bubble.jpg'       },
   { name: 'Carbon Fiber', url: 'textures/carbonFiber.jpg'  },
   { name: 'Crystal',      url: 'textures/crystal.jpg'      },
+  { name: 'Dots',         url: 'textures/dots.jpg'         },
   { name: 'Grip Surface', url: 'textures/gripSurface.jpg'  },
   { name: 'Hexagons',     url: 'textures/hexagons.jpg'     },
   { name: 'Knitting',     url: 'textures/knitting.jpg'     },

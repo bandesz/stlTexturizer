@@ -48,8 +48,8 @@ const CREASE_WEIGHT = 1e4;  // quadric penalty weight for crease edges
 
 // Module-level scratch arrays for hasLinkViolation — avoids new Map() per call.
 // Size 128 exceeds the maximum practical vertex valence in any STL mesh.
-const _hlvHi = new Float64Array(128);
-const _hlvLo = new Int32Array(128);
+const _hlvHi = new Float64Array(512);
+const _hlvLo = new Int32Array(512);
 
 // ── Public API ───────────────────────────────────────────────────────────────
 
@@ -97,11 +97,22 @@ export async function decimate(geometry, targetTriangles, onProgress) {
   const initFaces  = activeFaces;
   const toRemove   = initFaces - targetTriangles;
   let   lastProg   = 0;
-  let   collapses  = 0;
+  let   iterations = 0;
 
   while (activeFaces > targetTriangles && heap.size() > 0) {
     const idx = heap.pop();
     if (idx < 0) break;
+
+    // Yield periodically based on total iterations (including rejections)
+    // to keep the UI responsive.  Critical for flat / low-displacement
+    // surfaces where most collapses are rejected by the safety guards.
+    if ((++iterations & 4095) === 0) {
+      await new Promise(r => setTimeout(r, 0));
+      if (onProgress) {
+        const p = Math.min(1, (initFaces - activeFaces) / toRemove);
+        if (p - lastProg > 0.005) { onProgress(p); lastProg = p; }
+      }
+    }
 
     const v1 = heap.getV1(idx), v2 = heap.getV2(idx);
     const ver1 = heap.getVer1(idx), ver2 = heap.getVer2(idx);
@@ -170,13 +181,7 @@ export async function decimate(geometry, targetTriangles, onProgress) {
       }
     }
 
-    if (onProgress && (++collapses & 511) === 0) {
-      const p = Math.min(1, (initFaces - activeFaces) / toRemove);
-      if (p - lastProg > 0.015) {
-        onProgress(p); lastProg = p;
-        await new Promise(r => setTimeout(r, 0));
-      }
-    }
+
   }
 
   if (onProgress) onProgress(1);
@@ -498,14 +503,25 @@ function pushEdge(heap, quadrics, positions, version, v1, v2) {
     const e1 = evalQSum(quadrics, v1, v2, positions[v1*3],   positions[v1*3+1], positions[v1*3+2]);
     const e2 = evalQSum(quadrics, v1, v2, positions[v2*3],   positions[v2*3+1], positions[v2*3+2]);
     const em = evalQSum(quadrics, v1, v2, mx, my, mz);
-    if      (e1 <= e2 && e1 <= em) { px = positions[v1*3]; py = positions[v1*3+1]; pz = positions[v1*3+2]; }
-    else if (e2 <= em)             { px = positions[v2*3]; py = positions[v2*3+1]; pz = positions[v2*3+2]; }
-    else                           { px = mx; py = my; pz = mz; }
+    // Prefer midpoint when costs are near-equal (degenerate / flat surfaces).
+    // Midpoint minimises displacement of adjacent triangles, reducing normal
+    // flips and preventing the collapse loop from stalling on coplanar geometry.
+    const eMin = Math.min(e1, e2, em);
+    const eTol = eMin * 1e-2 + 1e-12;
+    if      (em <= eMin + eTol) { px = mx; py = my; pz = mz; }
+    else if (e1 <= e2)          { px = positions[v1*3]; py = positions[v1*3+1]; pz = positions[v1*3+2]; }
+    else                        { px = positions[v2*3]; py = positions[v2*3+1]; pz = positions[v2*3+2]; }
   }
 
   const cost = evalQSum(quadrics, v1, v2, px, py, pz);
-  // Snapshot both vertices' versions so the pop-side check can detect staleness
-  heap.push(cost, v1, v2, version[v1], version[v2], px, py, pz);
+  // Tiny edge-length tiebreaker: on degenerate (flat) surfaces where QEM
+  // costs are ~0, prefer collapsing shorter edges first for better triangle
+  // quality and fewer guard rejections.
+  const dx = positions[v2*3] - positions[v1*3];
+  const dy = positions[v2*3+1] - positions[v1*3+1];
+  const dz = positions[v2*3+2] - positions[v1*3+2];
+  heap.push(cost + (dx*dx + dy*dy + dz*dz) * 1e-8,
+            v1, v2, version[v1], version[v2], px, py, pz);
 }
 
 // ── Indexed <-> Non-indexed conversion ──────────────────────────────────────
