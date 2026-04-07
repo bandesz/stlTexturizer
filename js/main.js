@@ -1489,13 +1489,28 @@ function addFineWheelSupport(input, applyFn) {
     if (input.disabled || input.readOnly) return;
     e.preventDefault();
     input.focus({ preventScroll: true });
+
     const precision = getInputPrecision(input);
-    const step = precision <= 0 ? 1 : 1 / (10 ** precision);
+
+    let step = precision <= 0 ? 1 : 1 / (10 ** precision);
+
+   
+    if (e.shiftKey) {
+      step *= 10;        // faster
+    } else if (e.ctrlKey || e.metaKey) {
+      step *= 0.1;       // ultra fine 
+    }
+
     const current = parseFloat(input.value);
     const fallback = parseFloat(input.defaultValue || input.min || '0');
     const base = isNaN(current) ? (isNaN(fallback) ? 0 : fallback) : current;
+
     const direction = e.deltaY < 0 ? 1 : -1;
-    const next = clampToInputBounds(input, roundToPrecision(base + direction * step, precision));
+    const next = clampToInputBounds(
+      input,
+      roundToPrecision(base + direction * step, precision + 2) 
+    );
+
     applyFn(next);
   }, { passive: false });
 }
