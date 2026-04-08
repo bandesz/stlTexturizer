@@ -223,6 +223,20 @@ function parse3MF(data) {
   const NS_CORE = 'http://schemas.microsoft.com/3dmanufacturing/core/2015/02';
   const NS_PROD = 'http://schemas.microsoft.com/3dmanufacturing/production/2015/06';
 
+  // 3MF Core Spec unit values → millimeters. Used to normalise incoming models
+  // to this project's internal mm convention. Note: in multi-file production
+  // 3MFs, per-spec each .model file could theoretically declare its own unit,
+  // but in practice slicers always use one unit globally — we use the root
+  // model's unit for the whole build.
+  const UNIT_TO_MM = {
+    micron:     0.001,
+    millimeter: 1,
+    centimeter: 10,
+    inch:       25.4,
+    foot:       304.8,
+    meter:      1000,
+  };
+
   // Parse all model files and collect objects by (filePath, id)
   // objectMap: "path#id" → { vertices: Float32Array, triangles: Uint32Array }
   const objectMap = new Map();
@@ -274,6 +288,14 @@ function parse3MF(data) {
   const rootPath = modelPaths.find(p => /^3D\/3dmodel\.model$/i.test(p.replace(/^\//, '')))
                 || modelPaths[0];
   const rootDoc  = readXML(rootPath);
+
+  // Read the model unit and build a uniform scale matrix that converts the
+  // file's coordinates to millimeters. Pre-multiplying this into each build
+  // item's transform propagates the scale through every nested component
+  // transform — both rotation/scale parts and translation parts.
+  const rootUnit  = (rootDoc.documentElement.getAttribute('unit') || 'millimeter').toLowerCase();
+  const unitScale = UNIT_TO_MM[rootUnit] ?? 1;
+  const unitMatrix = new THREE.Matrix4().makeScale(unitScale, unitScale, unitScale);
 
   // Collect final mesh instances: { meshKey, matrix }
   const instances = [];
@@ -343,19 +365,20 @@ function parse3MF(data) {
     for (const item of buildItems) {
       const objId = item.getAttribute('objectid');
       const itemTransform = parseTransform(item.getAttribute('transform'));
-      resolveObject(rootPath, objId, itemTransform);
+      const seedMatrix = unitMatrix.clone().multiply(itemTransform);
+      resolveObject(rootPath, objId, seedMatrix);
     }
   } else {
-    // No build section — just use all meshes directly
+    // No build section — just use all meshes directly with the unit scale applied
     for (const [key] of objectMap) {
-      instances.push({ meshKey: key, matrix: new THREE.Matrix4() });
+      instances.push({ meshKey: key, matrix: unitMatrix.clone() });
     }
   }
 
   if (instances.length === 0) {
-    // Fallback: use all parsed meshes
+    // Fallback: use all parsed meshes with the unit scale applied
     for (const [key] of objectMap) {
-      instances.push({ meshKey: key, matrix: new THREE.Matrix4() });
+      instances.push({ meshKey: key, matrix: unitMatrix.clone() });
     }
   }
 

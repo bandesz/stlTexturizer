@@ -1718,11 +1718,12 @@ async function handleModelFile(file) {
     currentStlName  = file.name.replace(/\.(stl|obj|3mf)$/i, '');
     checkAmplitudeWarning();
 
-    // Warn the user if bad triangles were silently removed during load
+    // Log (but don't block the user with an alert) if bad triangles were
+    // silently removed during load — this is non-critical; the all-invalid
+    // case is already thrown as an error by validateAndCleanGeometry.
     const removedCount = (nanCount ?? 0) + (degenerateCount ?? 0);
     if (removedCount > 0) {
       console.warn(`Removed ${nanCount} NaN and ${degenerateCount} degenerate triangles at load time`);
-      alert(t('alerts.degenerateTrianglesRemoved', { n: removedCount }));
     }
 
     // Dispose old preview material and reset state for the new mesh
