@@ -9,7 +9,7 @@ import { createPreviewMaterial, updateMaterial } from './previewMaterial.js';
 import { subdivide }          from './subdivision.js';
 import { applyDisplacement }  from './displacement.js';
 import { decimate }           from './decimation.js';
-import { exportSTL, export3MF } from './exporter.js';
+import { exportSTL, export3MF, export3MFMultiPart } from './exporter.js';
 import { buildAdjacency, bucketFill,
          buildExclusionOverlayGeo, buildFaceWeights } from './exclusion.js';
 import { t, initLang, setLang, getLang, applyTranslations, TRANSLATIONS } from './i18n.js';
@@ -2907,7 +2907,69 @@ async function toggleDisplacementPreview(enable) {
   }
 }
 
-// ── Export pipeline ───────────────────────────────────────────────────────────
+// ── Export pipeline ────────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Splits a displaced (non-indexed) geometry into per-part BufferGeometries
+ * using the faceParentId map produced by subdivide() and the partRanges
+ * recorded during 3MF loading.
+ *
+ * faceParentId[i] is the index of triangle i’s ancestor in the original
+ * pre-subdivision geometry (i.e. currentGeometry).  partRanges describe
+ * which contiguous block of those original triangles belongs to each body.
+ *
+ * Returns an array of { geometry, name } for non-empty parts.
+ */
+function splitByOriginalPart(geometry, faceParentId, partRanges) {
+  const posArr   = geometry.attributes.position.array;
+  const triCount = (posArr.length / 9) | 0;
+  const nParts   = partRanges.length;
+
+  // Binary-search helper: find the partRanges index that owns origTri.
+  function findPart(origTri) {
+    let lo = 0, hi = nParts - 1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      const r   = partRanges[mid];
+      if      (origTri < r.startTri)             hi = mid - 1;
+      else if (origTri >= r.startTri + r.count)  lo = mid + 1;
+      else                                        return mid;
+    }
+    return -1;
+  }
+
+  // First pass: count triangles per part.
+  const counts = new Int32Array(nParts);
+  for (let i = 0; i < triCount; i++) {
+    const p = findPart(faceParentId[i]);
+    if (p >= 0) counts[p]++;
+  }
+
+  // Allocate typed arrays.
+  const bufs    = partRanges.map((_, j) => new Float32Array(counts[j] * 9));
+  const offsets = new Int32Array(nParts); // write cursors
+
+  // Second pass: fill per-part position arrays.
+  for (let i = 0; i < triCount; i++) {
+    const p = findPart(faceParentId[i]);
+    if (p < 0) continue;
+    const dst = offsets[p];
+    const src = i * 9;
+    bufs[p].set(posArr.subarray(src, src + 9), dst);
+    offsets[p] += 9;
+  }
+
+  // Build geometries.
+  const result = [];
+  for (let j = 0; j < nParts; j++) {
+    if (counts[j] === 0) continue;
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(bufs[j], 3));
+    geo.computeVertexNormals();
+    result.push({ geometry: geo, name: partRanges[j].name });
+  }
+  return result;
+}
 
 /**
  * Builds per-non-indexed-vertex weights (1.0 = excluded from subdivision/displacement)
@@ -2968,6 +3030,7 @@ async function handleExport(format = 'stl') {
   let subdivided      = null;
   let displaced       = null;
   let finalGeometry   = null;
+  let partGeometries  = [];   // per-body geometries created during multi-part split
   let exportSucceeded = false; // set true only after exportSTL so finally can clean up on abort/error
 
   try {
@@ -2984,8 +3047,8 @@ async function handleExport(format = 'stl') {
       ? buildCombinedFaceWeights(currentGeometry, excludedFaces, selectionMode, settings)
       : null;
 
-    let safetyCapHit;
-    ({ geometry: subdivided, safetyCapHit } = await subdivide(
+    let safetyCapHit, faceParentId;
+    ({ geometry: subdivided, safetyCapHit, faceParentId } = await subdivide(
       currentGeometry, settings.refineLength,
       (p, triCount, longestEdge) => {
         const label = triCount != null
@@ -3022,8 +3085,15 @@ async function handleExport(format = 'stl') {
     triLimitWarning.classList.toggle('hidden', !safetyCapHit);
     triLimitWarning.textContent = t('warnings.safetyCapHit');
 
+    // Multi-part 3MF: skip the merged-geometry decimation so faceParentId
+    // still maps correctly from displaced triangles to original body ranges.
+    // Single-part / STL: keep the existing decimation path.
+    const isMultiPart3MF = format === '3mf'
+      && currentGeometry.userData.partRanges
+      && currentGeometry.userData.partRanges.length > 1;
+
     finalGeometry = displaced;
-    if (needsDecimation) {
+    if (needsDecimation && !isMultiPart3MF) {
       setProgress(0.71, t('progress.decimatingTo', { from: dispTriCount.toLocaleString(), to: settings.maxTriangles.toLocaleString() }));
       finalGeometry = await runAsync(() =>
         decimate(
@@ -3040,7 +3110,7 @@ async function handleExport(format = 'stl') {
       );
       // Free pre-decimation geometry — decimate created a separate copy
       displaced.dispose();
-	  if (exportToken !== myToken) return;
+      if (exportToken !== myToken) return;
     }
 
     // Flat-bottom clamp: when bottom faces are masked (bottomAngleLimit > 0),
@@ -3077,7 +3147,45 @@ async function handleExport(format = 'stl') {
     const ampLabel = settings.amplitude.toFixed(2).replace('.', 'p');
     const baseName = `${currentStlName}_${texLabel}_amp${ampLabel}`;
 
-    if (format === '3mf') {
+    if (isMultiPart3MF) {
+      // Split the displaced mesh back into per-body geometries, then optionally
+      // decimate each body with a proportional triangle budget.
+      const rawParts = splitByOriginalPart(
+        finalGeometry, faceParentId, currentGeometry.userData.partRanges
+      );
+      partGeometries = rawParts.map(p => p.geometry);
+
+      let exportParts;
+      if (needsDecimation) {
+        setProgress(0.71, t('progress.decimatingTo', { from: dispTriCount.toLocaleString(), to: settings.maxTriangles.toLocaleString() }));
+        exportParts = [];
+        for (let pi = 0; pi < rawParts.length; pi++) {
+          const partGeo      = rawParts[pi].geometry;
+          const partTriCount = partGeo.attributes.position.count / 3;
+          const budget = Math.max(4, Math.round(settings.maxTriangles * partTriCount / dispTriCount));
+          if (partTriCount > budget) {
+            const decimated = await runAsync(() =>
+              decimate(partGeo, budget, (p) => {
+                setProgress(0.71 + (pi / rawParts.length + p / rawParts.length) * 0.25,
+                  t('progress.decimating', { cur: Math.round(partTriCount - (partTriCount - budget) * p).toLocaleString(), to: budget.toLocaleString() }));
+              })
+            );
+            partGeometries.push(decimated); // track for disposal
+            exportParts.push({ geometry: decimated, name: rawParts[pi].name });
+          } else {
+            exportParts.push(rawParts[pi]);
+          }
+          if (exportToken !== myToken) return;
+        }
+      } else {
+        exportParts = rawParts;
+      }
+
+      setProgress(0.97, t('progress.writing3mf'));
+      await yieldFrame();
+      if (exportToken !== myToken) return;
+      export3MFMultiPart(exportParts, `${baseName}.3mf`);
+    } else if (format === '3mf') {
       setProgress(0.97, t('progress.writing3mf'));
       await yieldFrame();
       if (exportToken !== myToken) return;
@@ -3104,6 +3212,8 @@ async function handleExport(format = 'stl') {
     if (subdivided) subdivided.dispose();
     if (displaced && displaced !== subdivided) displaced.dispose();
     if (finalGeometry && finalGeometry !== displaced && finalGeometry !== subdivided) finalGeometry.dispose();
+    // Dispose per-body split geometries created during multi-part export.
+    for (const g of partGeometries) { try { g.dispose(); } catch (_) {} }
     // Hide progress immediately on error or stale abort; success hides it after 1500 ms.
     if (!exportSucceeded) exportProgress.classList.add('hidden');
     isExporting = false;

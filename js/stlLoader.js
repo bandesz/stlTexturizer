@@ -52,7 +52,12 @@ function validateAndCleanGeometry(geometry) {
   const src  = pos.array;           // Float32Array, 9 floats per triangle
   const triCount = src.length / 9;
 
+  // Side-channel: per-triangle part index for multi-part 3MF (optional)
+  const tpi    = geometry.userData._triPartIndex || null;
+  const newTpi = tpi ? new Int32Array(triCount) : null;
+
   let writeIdx = 0;
+  let tpiWrite = 0;
   let nanCount = 0;
   let degenerateCount = 0;
 
@@ -83,13 +88,16 @@ function validateAndCleanGeometry(geometry) {
       src[writeIdx+3] = bx; src[writeIdx+4] = by; src[writeIdx+5] = bz;
       src[writeIdx+6] = cx; src[writeIdx+7] = cy; src[writeIdx+8] = cz;
     }
+    if (newTpi) newTpi[tpiWrite] = tpi[t];
     writeIdx += 9;
+    tpiWrite++;
   }
 
   const removed = nanCount + degenerateCount;
   if (removed > 0) {
     geometry.setAttribute('position', new THREE.BufferAttribute(src.slice(0, writeIdx), 3));
     geometry.deleteAttribute('normal'); // stale — recomputed below
+    if (newTpi) geometry.userData._triPartIndex = newTpi.slice(0, tpiWrite);
   }
 
   if (writeIdx === 0) {
@@ -190,6 +198,27 @@ export function load3MFFile(file) {
       try {
         const geometry = parse3MF(new Uint8Array(e.target.result));
         const { nanCount, degenerateCount } = setupGeometry(geometry);
+
+        // Convert raw per-triangle part index to compact partRanges if multi-part
+        if (geometry.userData._triPartIndex && geometry.userData._partNames) {
+          const tpi       = geometry.userData._triPartIndex;
+          const partNames = geometry.userData._partNames;
+          if (partNames.length > 1) {
+            const ranges = [];
+            let i = 0;
+            while (i < tpi.length) {
+              const partIdx = tpi[i];
+              let j = i;
+              while (j < tpi.length && tpi[j] === partIdx) j++;
+              ranges.push({ startTri: i, count: j - i, name: partNames[partIdx] });
+              i = j;
+            }
+            geometry.userData.partRanges = ranges;
+          }
+          delete geometry.userData._triPartIndex;
+          delete geometry.userData._partNames;
+        }
+
         const bounds = computeBounds(geometry);
         resolve({ geometry, bounds, nanCount, degenerateCount });
       } catch (err) {
@@ -297,8 +326,11 @@ function parse3MF(data) {
   const unitScale = UNIT_TO_MM[rootUnit] ?? 1;
   const unitMatrix = new THREE.Matrix4().makeScale(unitScale, unitScale, unitScale);
 
-  // Collect final mesh instances: { meshKey, matrix }
+  // Collect final mesh instances: { meshKey, matrix, partIdx }
+  // partIdx identifies which top-level <build> item this instance originates from.
   const instances = [];
+  // Part names indexed by partIdx — populated from build items below.
+  const partNames = [];
 
   function parseTransform(str) {
     if (!str) return new THREE.Matrix4();
@@ -315,7 +347,8 @@ function parse3MF(data) {
     return new THREE.Matrix4();
   }
 
-  function resolveObject(filePath, objectId, parentMatrix, visiting = new Set(), depth = 0) {
+  // partIdx propagates the top-level build item index down through all nested components.
+  function resolveObject(filePath, objectId, parentMatrix, visiting = new Set(), depth = 0, partIdx = 0) {
     if (depth > MAX_3MF_DEPTH) {
       throw new Error('3MF component hierarchy too deep — possible cyclic reference');
     }
@@ -328,9 +361,9 @@ function parse3MF(data) {
     }
     visiting.add(key);
 
-    // If this object has a mesh, emit an instance
+    // If this object has a mesh, emit an instance tagged with its build-item partIdx
     if (objectMap.has(key)) {
-      instances.push({ meshKey: key, matrix: parentMatrix.clone() });
+      instances.push({ meshKey: key, matrix: parentMatrix.clone(), partIdx });
     }
 
     // Also check for components (the object may have both mesh + components,
@@ -352,7 +385,7 @@ function parse3MF(data) {
         }
         const compTransform = parseTransform(comp.getAttribute('transform'));
         const combined = parentMatrix.clone().multiply(compTransform);
-        resolveObject(compPath, compObjId, combined, visiting, depth + 1);
+        resolveObject(compPath, compObjId, combined, visiting, depth + 1, partIdx);
       }
     }
 
@@ -362,23 +395,38 @@ function parse3MF(data) {
   // Start from <build> items in root model
   const buildItems = rootDoc.getElementsByTagNameNS(NS_CORE, 'item');
   if (buildItems.length > 0) {
-    for (const item of buildItems) {
+    const rootObjects = rootDoc.getElementsByTagNameNS(NS_CORE, 'object');
+    for (let bi = 0; bi < buildItems.length; bi++) {
+      const item  = buildItems[bi];
       const objId = item.getAttribute('objectid');
+
+      // Derive part name: prefer <object name="..."> on the referenced object,
+      // fall back to a generic "Body N" label.
+      let partName = null;
+      for (const obj of rootObjects) {
+        if (obj.getAttribute('id') === objId) {
+          partName = obj.getAttribute('name') || null;
+          break;
+        }
+      }
+      if (!partName) partName = `Body ${bi + 1}`;
+      partNames.push(partName);
+
       const itemTransform = parseTransform(item.getAttribute('transform'));
       const seedMatrix = unitMatrix.clone().multiply(itemTransform);
-      resolveObject(rootPath, objId, seedMatrix);
+      resolveObject(rootPath, objId, seedMatrix, new Set(), 0, bi);
     }
   } else {
     // No build section — just use all meshes directly with the unit scale applied
     for (const [key] of objectMap) {
-      instances.push({ meshKey: key, matrix: unitMatrix.clone() });
+      instances.push({ meshKey: key, matrix: unitMatrix.clone(), partIdx: 0 });
     }
   }
 
   if (instances.length === 0) {
     // Fallback: use all parsed meshes with the unit scale applied
     for (const [key] of objectMap) {
-      instances.push({ meshKey: key, matrix: unitMatrix.clone() });
+      instances.push({ meshKey: key, matrix: unitMatrix.clone(), partIdx: 0 });
     }
   }
 
@@ -395,8 +443,11 @@ function parse3MF(data) {
     );
   }
 
-  const positions = new Float32Array(totalTris * 9);
+  const positions    = new Float32Array(totalTris * 9);
+  // Per-triangle part index — only populated when there are multiple build items.
+  const triPartIndex = partNames.length > 1 ? new Int32Array(totalTris) : null;
   let writeOffset = 0;
+  let triOffset   = 0;
   const tmpV = new THREE.Vector3();
 
   for (const inst of instances) {
@@ -412,11 +463,18 @@ function parse3MF(data) {
         positions[writeOffset++] = tmpV.y;
         positions[writeOffset++] = tmpV.z;
       }
+      if (triPartIndex) triPartIndex[triOffset] = inst.partIdx;
+      triOffset++;
     }
   }
 
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  // Stash part-index metadata so load3MFFile can build partRanges after cleanup.
+  if (triPartIndex) {
+    geometry.userData._triPartIndex = triPartIndex;
+    geometry.userData._partNames    = partNames;
+  }
   return geometry;
 }
 
