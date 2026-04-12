@@ -629,37 +629,9 @@ function wireEvents() {
     if (e.target === imprintOverlay) imprintOverlay.classList.add('hidden');
   });
 
-  // ── Support banner dismiss ──
-  document.getElementById('store-cta-dismiss').addEventListener('click', () => {
-    document.getElementById('store-cta-wrapper').classList.add('store-cta-hidden');
-  });
-
   // ── Export ──
-  const startExport = (format) => {
-    if (sessionStorage.getItem('stlt-no-sponsor') === '1') {
-      handleExport(format);
-      return;
-    }
-    const overlay = document.getElementById('sponsor-overlay');
-    const closeBtn = document.getElementById('sponsor-close');
-    const storeLink = overlay.querySelector('.sponsor-link');
-    overlay.classList.remove('hidden');
-    trapFocus(overlay);
-
-    const dismiss = () => {
-      if (document.getElementById('sponsor-dont-show').checked) {
-        sessionStorage.setItem('stlt-no-sponsor', '1');
-      }
-      overlay.classList.add('hidden');
-      handleExport(format);
-    };
-
-    closeBtn.onclick = dismiss;
-    // Also start processing when the user clicks through to the store
-    storeLink.onclick = () => setTimeout(dismiss, 150);
-  };
-  exportBtn.addEventListener('click', () => startExport('stl'));
-  export3mfBtn.addEventListener('click', () => startExport('3mf'));
+  exportBtn.addEventListener('click', () => handleExport('stl'));
+  export3mfBtn.addEventListener('click', () => handleExport('3mf'));
 
   // ── Wireframe ──
   wireframeToggle.addEventListener('change', () => setWireframe(wireframeToggle.checked));
