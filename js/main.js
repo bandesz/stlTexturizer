@@ -559,7 +559,6 @@ function wireEvents() {
   scaleUSlider.addEventListener('input', () => applyScaleU(posToScale(parseFloat(scaleUSlider.value))));
   scaleUSlider.addEventListener('dblclick', () => applyScaleU(posToScale(parseFloat(scaleUSlider.defaultValue))));
   scaleUVal.addEventListener('change', () => applyScaleU(parseFloat(scaleUVal.value)));
-  addFineWheelSupport(scaleUVal, applyScaleU);
 
   // Scale V — when lock is on, mirror to U
   const applyScaleV = (v) => {
@@ -573,7 +572,6 @@ function wireEvents() {
   scaleVSlider.addEventListener('input', () => applyScaleV(posToScale(parseFloat(scaleVSlider.value))));
   scaleVSlider.addEventListener('dblclick', () => applyScaleV(posToScale(parseFloat(scaleVSlider.defaultValue))));
   scaleVVal.addEventListener('change', () => applyScaleV(parseFloat(scaleVVal.value)));
-  addFineWheelSupport(scaleVVal, applyScaleV);
 
   // Lock toggle
   lockScaleBtn.addEventListener('click', () => {
@@ -697,13 +695,6 @@ function wireEvents() {
     exclBrushRadiusVal.value = diam;
     checkPrecisionOutdated();
   });
-  addFineWheelSupport(exclBrushRadiusVal, (v) => {
-    const diam = Math.max(0.2, Math.min(100, v));
-    brushRadius = diam / 2;
-    exclBrushRadiusSlider.value = diam;
-    exclBrushRadiusVal.value = diam;
-    checkPrecisionOutdated();
-  });
 
   exclThresholdSlider.addEventListener('input', () => {
     bucketThreshold = parseFloat(exclThresholdSlider.value);
@@ -718,12 +709,6 @@ function wireEvents() {
   });
   exclThresholdVal.addEventListener('change', () => {
     bucketThreshold = Math.max(0, Math.min(180, parseFloat(exclThresholdVal.value) || 20));
-    exclThresholdSlider.value = bucketThreshold;
-    exclThresholdVal.value = bucketThreshold;
-    _lastHoverTriIdx = -1;
-  });
-  addFineWheelSupport(exclThresholdVal, (v) => {
-    bucketThreshold = Math.max(0, Math.min(180, v));
     exclThresholdSlider.value = bucketThreshold;
     exclThresholdVal.value = bucketThreshold;
     _lastHoverTriIdx = -1;
@@ -863,6 +848,14 @@ function wireEvents() {
   document.addEventListener('keyup', (e) => {
     if (e.key === 'Control') _clearShiftLinePreview();
   });
+
+  // Prevent scroll from changing number input values (both native browser behaviour
+  // and any custom wheel handlers that might be attached)
+  document.addEventListener('wheel', (e) => {
+    if (e.target.tagName === 'INPUT' && e.target.type === 'number' && document.activeElement === e.target) {
+      e.preventDefault();
+    }
+  }, { passive: false });
 }
 
 // ── Exclusion helpers ─────────────────────────────────────────────────────────
@@ -1500,27 +1493,6 @@ function updateBucketHover(e) {
 }
 
 // ── Slider helper ─────────────────────────────────────────────────────────────
-
-const INPUT_WHEEL_DECIMALS = 3;
-
-function getInputPrecision(input) {
-  const configured = parseInt(input.dataset.wheelDecimals, 10);
-  if (!isNaN(configured) && configured >= 0) return configured;
-  const step = input.step;
-  if (step === 'any') return INPUT_WHEEL_DECIMALS;
-  const stepNum = parseFloat(step);
-  if (isNaN(stepNum)) return INPUT_WHEEL_DECIMALS;
-  if (Number.isInteger(stepNum)) return 0;
-  const frac = step.includes('.') ? step.split('.')[1].replace(/0+$/, '').length : 0;
-  return Math.max(INPUT_WHEEL_DECIMALS, frac);
-}
-
-function roundToPrecision(value, precision) {
-  if (precision <= 0) return Math.round(value);
-  const factor = 10 ** precision;
-  return Math.round(value * factor) / factor;
-}
-
 function clampToInputBounds(input, value) {
   const min = parseFloat(input.min);
   const max = parseFloat(input.max);
@@ -1534,37 +1506,6 @@ function formatInputValue(input, value) {
   const precision = getInputPrecision(input);
   if (precision <= 0) return String(Math.round(value));
   return value.toFixed(precision).replace(/\.?0+$/, '');
-}
-
-function addFineWheelSupport(input, applyFn) {
-  input.addEventListener('wheel', (e) => {
-    if (input.disabled || input.readOnly) return;
-    e.preventDefault();
-    input.focus({ preventScroll: true });
-
-    const precision = getInputPrecision(input);
-
-    let step = precision <= 0 ? 1 : 1 / (10 ** precision);
-
-   
-    if (e.shiftKey) {
-      step *= 10;        // faster
-    } else if (e.ctrlKey || e.metaKey) {
-      step *= 0.1;       // ultra fine 
-    }
-
-    const current = parseFloat(input.value);
-    const fallback = parseFloat(input.defaultValue || input.min || '0');
-    const base = isNaN(current) ? (isNaN(fallback) ? 0 : fallback) : current;
-
-    const direction = e.deltaY < 0 ? 1 : -1;
-    const next = clampToInputBounds(
-      input,
-      roundToPrecision(base + direction * step, precision + 2) 
-    );
-
-    applyFn(next);
-  }, { passive: false });
 }
 
 function linkSlider(slider, valInput, onChangeFn, livePreview = true) {
@@ -1605,7 +1546,6 @@ function linkSlider(slider, valInput, onChangeFn, livePreview = true) {
       if (isNaN(raw)) { valInput.value = formatInputValue(valInput, parseFloat(slider.value)); return; }
       applyLinkedValue(raw);
     });
-    addFineWheelSupport(valInput, applyLinkedValue);
   }
 }
 
