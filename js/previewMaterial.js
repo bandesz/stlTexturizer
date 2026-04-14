@@ -41,6 +41,7 @@ const sharedGLSL = /* glsl */`
   uniform int       symmetricDisplacement;
   uniform int       noDownwardZ;
   uniform int       useDisplacement;
+  uniform int       invertTexture;
   uniform vec2      textureAspect;
 
   const float PI     = 3.14159265358979;
@@ -96,7 +97,8 @@ const sharedGLSL = /* glsl */`
     uv -= 0.5;
     uv  = vec2(c * uv.x - s * uv.y, s * uv.x + c * uv.y);
     uv += 0.5;
-    return texture2D(displacementMap, uv).r;
+    float val = texture2D(displacementMap, uv).r;
+    return invertTexture == 1 ? 1.0 - val : val;
   }
 
   // Compute displacement height at a world-space point.
@@ -452,6 +454,7 @@ export function updateMaterial(material, displacementTexture, settings) {
   u.symmetricDisplacement.value   = settings.symmetricDisplacement   ? 1 : 0;
   u.noDownwardZ.value             = settings.noDownwardZ             ? 1 : 0;
   u.useDisplacement.value         = settings.useDisplacement         ? 1 : 0;
+  u.invertTexture.value           = settings.invertTexture           ? 1 : 0;
   u.textureAspect.value.set(settings.textureAspectU ?? 1, settings.textureAspectV ?? 1);
   u.boundaryFalloffDist.value       = settings.boundaryFalloff           ?? 0.0;
 }
@@ -487,6 +490,7 @@ function buildUniforms(tex, settings) {
     symmetricDisplacement:    { value: settings.symmetricDisplacement   ? 1 : 0 },
     noDownwardZ:              { value: settings.noDownwardZ             ? 1 : 0 },
     useDisplacement:          { value: settings.useDisplacement         ? 1 : 0 },
+    invertTexture:            { value: settings.invertTexture           ? 1 : 0 },
     textureAspect:            { value: new THREE.Vector2(settings.textureAspectU ?? 1, settings.textureAspectV ?? 1) },
     boundaryEdgeTex:          { value: createFallbackDataTexture() },
     boundaryEdgeCount:        { value: 0 },
