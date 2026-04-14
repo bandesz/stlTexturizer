@@ -86,6 +86,8 @@ export default {
   "tooltips.boundaryFalloff": "Gradually reduces displacement to zero near masked boundaries, preventing triangle overlap where textured and non-textured regions meet.",
   "labels.symmetricDisplacement": "Symmetric displacement ⓘ",
   "tooltips.symmetricDisplacement": "When on, 50% grey = no displacement; white pushes out, black pushes in. Keeps part volume roughly constant.",
+  "labels.invertTexture": "Invert Texture ⓘ",
+  "tooltips.invertTexture": "Swap black and white in the displacement map — peaks become valleys and valleys become peaks.",
   "labels.displacementPreview": "3D Preview ⓘ",
   "tooltips.displacementPreview": "Subdivides the mesh and displaces vertices in real-time so you can judge the actual depth. GPU-intensive on complex models.",
   "ui.placeOnFace": "Place on Face",

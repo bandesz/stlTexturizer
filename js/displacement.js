@@ -372,7 +372,6 @@ export function applyDisplacement(geometry, imageData, imgWidth, imgHeight, sett
     tmpNrm.fromBufferAttribute(nrmAttr, i);
 
     const vid  = vertexId[i];
-    const grey = dispCacheVal[vid];
 
     // User-excluded faces get zero displacement; only angle-based masking uses
     // the smooth per-vertex blend so neighbours are never unintentionally dimmed.
@@ -383,6 +382,7 @@ export function applyDisplacement(geometry, imageData, imgWidth, imgHeight, sett
     const isSealedBoundary = !isFaceExcluded && excludedPos && excludedPos[vid] === 1;
     const mfTotal = maskedFracTotal[vid];
     const maskedFrac = mfTotal > 0 ? maskedFracMasked[vid] / mfTotal : 0;
+    const grey = settings.invertTexture ? 1.0 - dispCacheVal[vid] : dispCacheVal[vid];
     const centeredGrey = settings.symmetricDisplacement ? (grey - 0.5) : grey;
     const falloffFactor = falloffArr ? falloffArr[vid] : 1.0;
     const disp = (isFaceExcluded || isSealedBoundary) ? 0 : falloffFactor * (1 - maskedFrac) * centeredGrey * settings.amplitude;

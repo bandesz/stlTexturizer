@@ -76,6 +76,7 @@ const settings = {
   boundaryFalloff:  0,
   symmetricDisplacement: false,
   useDisplacement: false,
+  invertTexture: false,
 };
 
 // ── Canvas filter support (Safari / iOS WebView don't support ctx.filter) ────
@@ -234,6 +235,7 @@ const boundaryFalloffSlider    = document.getElementById('boundary-falloff');
 const boundaryFalloffVal       = document.getElementById('boundary-falloff-val');
 const symmetricDispToggle    = document.getElementById('symmetric-displacement');
 const dispPreviewToggle      = document.getElementById('displacement-preview');
+const invertTextureToggle    = document.getElementById('invert-texture');
 
 // ── Exclusion panel DOM refs ──────────────────────────────────────────────────
 const exclBrushBtn        = document.getElementById('excl-brush-btn');
@@ -603,6 +605,11 @@ function wireEvents() {
   linkSlider(capAngleSlider,          capAngleVal,          v => { settings.capAngle         = v; return Math.round(v); });
   symmetricDispToggle.addEventListener('change', () => {
     settings.symmetricDisplacement = symmetricDispToggle.checked;
+    updatePreview();
+  });
+
+  invertTextureToggle.addEventListener('change', () => {
+    settings.invertTexture = invertTextureToggle.checked;
     updatePreview();
   });
 
