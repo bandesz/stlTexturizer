@@ -2855,11 +2855,14 @@ async function handleModelFile(file) {
     triangleFaceNormals = adjData.faceNormals;
     updateMeshDiagnostics(adjData, currentGeometry.attributes.position.count / 3);
 
-    // Carry scale, offset, rotation, and all other tuning across model swaps —
+    // Carry scale, rotation, and all other tuning across model swaps —
     // they're normalized to the bounding box so they apply meaningfully to the
     // new mesh. Output resolution is the one exception: it's recomputed below
     // from the new model's diagonal so a default-sized edge length still makes
     // sense whether the user just loaded a thumb-sized part or a 1m piece.
+    // Offsets are reset since they are model-specific.
+    settings.offsetU = 0; offsetUSlider.value = 0; offsetUVal.value = 0;
+    settings.offsetV = 0; offsetVSlider.value = 0; offsetVVal.value = 0;
     triLimitWarning.classList.add('hidden');
 
     // Default edge length = 1/250 of the bounding box diagonal
