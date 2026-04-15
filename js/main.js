@@ -1716,13 +1716,11 @@ async function handleModelFile(file) {
     triangleCentroids = adjData.centroids; triangleBoundRadii = adjData.boundRadii;
     buildSpatialGrid(triangleCentroids, geometry.attributes.position.count / 3, bounds);
 
-    // Reset scale & offset sliders so scale=1 = one tile covers the full bounding box
+    // Reset offset sliders for the new model; scale is preserved as a user preference
     const resetVal = (slider, valEl, value) => {
       slider.value = value;
       valEl.value = value;
     };
-    settings.scaleU  = 0.5; scaleUSlider.value = scaleToPos(0.5); scaleUVal.value = 0.5;
-    settings.scaleV  = 0.5; scaleVSlider.value = scaleToPos(0.5); scaleVVal.value = 0.5;
     settings.offsetU = 0; resetVal(offsetUSlider, offsetUVal, 0);
     settings.offsetV = 0; resetVal(offsetVSlider, offsetVVal, 0);
     triLimitWarning.classList.add('hidden');
