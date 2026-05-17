@@ -2610,6 +2610,14 @@ function clampToInputBounds(input, value) {
   return clamped;
 }
 
+function getInputPrecision(input) {
+  const step = parseFloat(input.step);
+  if (isNaN(step) || step <= 0) return 2;
+  const s = step.toString();
+  const dot = s.indexOf('.');
+  return dot < 0 ? 0 : s.length - dot - 1;
+}
+
 function formatInputValue(input, value) {
   const precision = getInputPrecision(input);
   if (precision <= 0) return String(Math.round(value));
